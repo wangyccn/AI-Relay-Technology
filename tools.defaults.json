@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "disabled_tools": [],
+  "tools": [
+    {
+      "id": "vscode",
+      "name": "Visual Studio CodeXXX",
+      "category": "ide",
+      "commands": ["code"],
+      "config_path": {
+        "windows": "{$APPDATA}\\Code\\User\\settings.json",
+        "mac": "{USER_PATH}/Library/Application Support/Code/User/settings.json",
+        "linux": "{USER_PATH}/.config/Code/User/settings.json"
+      },
+      "install_hint": "https://code.visualstudio.com/download",
+      "homepage": "https://code.visualstudio.com/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id Microsoft.VisualStudioCode" },
+        { "manager": "brew", "command": "install --cask visual-studio-code" }
+      ],
+      "cli": { "enabled": true, "label": "code" }
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "category": "language",
+      "commands": ["python", "python3"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.pythonrc",
+        "default": "{USER_PATH}/.pythonrc"
+      },
+      "install_hint": "https://www.python.org/downloads/",
+      "homepage": "https://www.python.org/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id Python.Python.3.12" },
+        { "manager": "brew", "command": "install python" }
+      ],
+      "cli": { "enabled": true, "label": "python" }
+    },
+    {
+      "id": "node",
+      "name": "Node.js",
+      "category": "language",
+      "commands": ["node"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.npmrc",
+        "default": "{USER_PATH}/.npmrc"
+      },
+      "install_hint": "https://nodejs.org/en/download",
+      "homepage": "https://nodejs.org/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id OpenJS.NodeJS.LTS" },
+        { "manager": "brew", "command": "install node" },
+        { "manager": "npm", "command": "install -g npm@latest" }
+      ],
+      "cli": { "enabled": true, "label": "node" }
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "category": "scm",
+      "commands": ["git"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.gitconfig",
+        "default": "{USER_PATH}/.gitconfig"
+      },
+      "install_hint": "https://git-scm.com/downloads",
+      "homepage": "https://git-scm.com/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id Git.Git" },
+        { "manager": "brew", "command": "install git" }
+      ],
+      "cli": { "enabled": true, "label": "git" }
+    },
+    {
+      "id": "rust",
+      "name": "Rust (rustup)",
+      "category": "language",
+      "commands": ["rustc", "cargo"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.cargo\\config",
+        "default": "{USER_PATH}/.cargo/config"
+      },
+      "install_hint": "https://rustup.rs",
+      "homepage": "https://www.rust-lang.org/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id Rustlang.Rustup" },
+        { "manager": "brew", "command": "install rustup-init" }
+      ],
+      "cli": { "enabled": false }
+    },
+    {
+      "id": "go",
+      "name": "Go",
+      "category": "language",
+      "commands": ["go"],
+      "version": { "args": ["version"] },
+      "config_path": {
+        "windows": "{USER_PATH}\\.goenv",
+        "default": "{USER_PATH}/.goenv"
+      },
+      "install_hint": "https://go.dev/dl/",
+      "homepage": "https://go.dev/",
+      "install_commands": [
+        { "manager": "winget", "command": "install -e --id GoLang.Go" },
+        { "manager": "brew", "command": "install go" }
+      ],
+      "cli": { "enabled": false }
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "category": "ai-cli",
+      "commands": ["codex"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.codex\\config.toml",
+        "default": "{USER_PATH}/.codex/config.toml"
+      },
+      "install_hint": "https://github.com/openai/codex",
+      "homepage": "https://github.com/openai/codex",
+      "install_commands": [
+        { "manager": "npm", "command": "install -g @openai/codex" }
+      ],
+      "cli": { "enabled": true, "label": "codex" }
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "category": "ai-cli",
+      "commands": ["claude"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.claude\\settings.json",
+        "default": "{USER_PATH}/.claude/settings.json"
+      },
+      "install_hint": "https://docs.anthropic.com/en/docs/build-with-claude/command-line",
+      "homepage": "https://www.anthropic.com/claude",
+      "install_commands": [
+        { "manager": "npm", "command": "install -g @anthropic-ai/claude-code" }
+      ],
+      "cli": { "enabled": true, "label": "claude" }
+    },
+    {
+      "id": "gemini-cli",
+      "name": "Gemini CLI",
+      "category": "ai-cli",
+      "commands": ["gemini"],
+      "config_path": {
+        "windows": "{USER_PATH}\\.gemini\\settings.json",
+        "default": "{USER_PATH}/.gemini/settings.json"
+      },
+      "install_hint": "https://github.com/google-gemini/gemini-cli",
+      "homepage": "https://github.com/google-gemini/gemini-cli",
+      "install_commands": [
+        { "manager": "npm", "command": "install -g @anthropic-ai/gemini-cli" }
+      ],
+      "cli": { "enabled": true, "label": "gemini" }
+    }
+  ],
+  "disabled_package_managers": []
+}
