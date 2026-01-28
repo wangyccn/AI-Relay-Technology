@@ -45,3 +45,5 @@ npm run tauri build
 ## 许可证
 
 Copyright © 2026 CRT Team
+
+** 当前项目与Anthropic/Google等AI公司无关，仅为个人项目，仅在Windows理想环境下测试，如果遇到问题，请提出issue或者使用邮箱联系我 <crworldltd@icloud.com>
