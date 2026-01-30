@@ -21,6 +21,8 @@ pub struct Settings {
     pub enable_retry_fallback: Option<bool>,
     /// Enable dynamic model adjustment based on availability
     pub enable_dynamic_model: Option<bool>,
+    /// Request limits (RPM, budgets, concurrency)
+    pub limits: RateLimitConfig,
     /// Theme configuration for the UI
     pub theme: ThemeConfig,
     /// Backup configuration
@@ -50,6 +52,37 @@ pub struct ProxyConfig {
 
     /// List of hosts/patterns to bypass proxy (e.g., ["localhost", "127.0.0.1"])
     pub bypass: Option<Vec<String>>,
+}
+
+/// Request limiting configuration
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    /// Requests per minute (global)
+    pub rpm: Option<u32>,
+    /// Max concurrent requests (global)
+    pub max_concurrent: Option<u32>,
+    /// Max concurrent requests per session
+    pub max_concurrent_per_session: Option<u32>,
+    /// Daily budget in USD
+    pub budget_daily_usd: Option<f64>,
+    /// Weekly budget in USD
+    pub budget_weekly_usd: Option<f64>,
+    /// Monthly budget in USD
+    pub budget_monthly_usd: Option<f64>,
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            rpm: None,
+            max_concurrent: None,
+            max_concurrent_per_session: None,
+            budget_daily_usd: None,
+            budget_weekly_usd: None,
+            budget_monthly_usd: None,
+        }
+    }
 }
 
 impl Default for ProxyConfig {

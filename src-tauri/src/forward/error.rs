@@ -24,6 +24,8 @@ pub enum ForwardError {
     RequestFailed(String),
     /// Invalid request format or parameters
     InvalidRequest(String),
+    /// Request rejected by rate limiting or quotas
+    RateLimited(String),
     /// Request timeout
     Timeout(String),
     /// Internal server error
@@ -39,6 +41,7 @@ impl std::fmt::Display for ForwardError {
             ForwardError::UpstreamNotFound(msg) => write!(f, "Upstream not found: {}", msg),
             ForwardError::RequestFailed(msg) => write!(f, "Request failed: {}", msg),
             ForwardError::InvalidRequest(msg) => write!(f, "Invalid request: {}", msg),
+            ForwardError::RateLimited(msg) => write!(f, "Rate limited: {}", msg),
             ForwardError::Timeout(msg) => write!(f, "Timeout: {}", msg),
             ForwardError::Internal(msg) => write!(f, "Internal error: {}", msg),
         }
@@ -66,6 +69,11 @@ impl IntoResponse for ForwardError {
             ForwardError::InvalidRequest(msg) => {
                 (StatusCode::BAD_REQUEST, "invalid_request", msg.clone())
             }
+            ForwardError::RateLimited(msg) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "rate_limited",
+                msg.clone(),
+            ),
             ForwardError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "timeout", msg.clone()),
             ForwardError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

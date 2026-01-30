@@ -132,6 +132,30 @@ pub fn remove(id: i64) -> bool {
         .unwrap_or(false)
 }
 
+pub fn replace_all(projects: &[Project]) -> Result<usize, String> {
+    let mut conn = open_conn();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("delete from projects", [])
+        .map_err(|e| e.to_string())?;
+    for project in projects {
+        let tags = serialize_tags(&project.tags);
+        tx.execute(
+            "insert into projects(id,name,path,description,tags,created_at) values(?,?,?,?,?,?)",
+            params![
+                project.id,
+                project.name,
+                project.path,
+                project.description,
+                tags,
+                project.created_at
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(projects.len())
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum ProjectOpenTarget {
     Folder,

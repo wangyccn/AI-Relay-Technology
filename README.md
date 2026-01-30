@@ -45,3 +45,29 @@ npm run tauri build
 ## 许可证
 
 Copyright © 2026 CRT Team
+
+## API Endpoints
+
+- `POST /v1/chat/completions`
+- `POST /v1/responses`
+- `GET /v1/models`
+- `POST /openai/v1/chat/completions`
+- `POST /openai/v1/responses`
+- `POST /anthropic/v1/messages`
+- `POST /gemini/v1beta/*`
+
+## Limits Config (settings.toml)
+
+```toml
+[limits]
+# requests per minute (global)
+rpm = 120
+# max concurrent requests (global)
+max_concurrent = 8
+# max concurrent requests per session (x-ccr-session-id)
+max_concurrent_per_session = 2
+# budgets in USD
+budget_daily_usd = 5.0
+budget_weekly_usd = 25.0
+budget_monthly_usd = 100.0
+```

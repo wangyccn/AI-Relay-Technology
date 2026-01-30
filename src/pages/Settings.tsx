@@ -45,6 +45,15 @@ const copyToClipboard = async (text: string): Promise<boolean> => {
   }
 };
 
+const parseOptionalNumber = (value: string, allowZero = true): number | undefined => {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed)) return undefined;
+  if (!allowZero && parsed <= 0) return undefined;
+  return parsed;
+};
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [themeModalOpen, setThemeModalOpen] = useState(false);
@@ -321,6 +330,14 @@ export default function SettingsPage() {
 
   const handleRetryChange = (field: keyof Settings, value: number) => {
     setSettings((prev) => (prev ? { ...prev, [field]: value } : prev));
+  };
+
+  const updateLimits = (patch: NonNullable<Settings["limits"]>) => {
+    setSettings((prev) => {
+      if (!prev) return prev;
+      const nextLimits = { ...(prev.limits || {}), ...patch };
+      return { ...prev, limits: nextLimits };
+    });
   };
 
   const handlePing = async (index: number) => {
@@ -682,7 +699,8 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* 代理配置 */}
+      {/* 代理配置 */}
+
       <div className="section settings-section-enhanced">
         <div className="section-header">
           <div className="section-title-group">
@@ -874,6 +892,93 @@ export default function SettingsPage() {
                 value={settings.retry_max_ms ?? 3000}
                 onChange={(e) => handleRetryChange("retry_max_ms", Number(e.target.value))}
               />
+            </label>
+          </div>
+        )}
+      </div>
+
+      <div className="section settings-section-enhanced">
+        <div className="section-header">
+          <div className="section-title-group">
+            <Shield size={20} className="section-icon" />
+            <h2>限流与预算</h2>
+          </div>
+          <div className="actions">
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              className={hasUnsavedChanges ? "save-btn-unsaved" : ""}
+            >
+              <Save size={16} />
+              {saving ? "保存中..." : hasUnsavedChanges ? "立即保存" : "保存"}
+            </button>
+          </div>
+        </div>
+        {!settings && <p className="muted">加载配置中...</p>}
+        {settings && (
+          <div className="form-grid">
+            <label>
+              <span className="muted">RPM（每分钟请求数）</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.limits?.rpm ?? ""}
+                onChange={(e) => updateLimits({ rpm: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span className="muted">最大并发</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.limits?.max_concurrent ?? ""}
+                onChange={(e) => updateLimits({ max_concurrent: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span className="muted">单 Session 并发</span>
+              <input
+                type="number"
+                min="0"
+                value={settings.limits?.max_concurrent_per_session ?? ""}
+                onChange={(e) => updateLimits({ max_concurrent_per_session: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span className="muted">每日预算 (USD)</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={settings.limits?.budget_daily_usd ?? ""}
+                onChange={(e) => updateLimits({ budget_daily_usd: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span className="muted">每周预算 (USD)</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={settings.limits?.budget_weekly_usd ?? ""}
+                onChange={(e) => updateLimits({ budget_weekly_usd: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label>
+              <span className="muted">每月预算 (USD)</span>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={settings.limits?.budget_monthly_usd ?? ""}
+                onChange={(e) => updateLimits({ budget_monthly_usd: parseOptionalNumber(e.target.value) })}
+              />
+            </label>
+            <label className="full">
+              <span className="muted" style={{ fontSize: 12 }}>
+                Session 通过请求头 x-ccr-session-id 或 x-ccr-session 识别；为空视为同一 Session。
+              </span>
             </label>
           </div>
         )}

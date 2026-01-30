@@ -4260,6 +4260,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures-util",
+ "once_cell",
  "open",
  "rand 0.8.5",
  "regex",

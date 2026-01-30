@@ -17,10 +17,12 @@
 //!
 //! ### Unified Endpoints (auto-route based on model)
 //! - `POST /v1/chat/completions` - OpenAI-compatible, routes to appropriate provider
+//! - `POST /v1/responses` - OpenAI Responses API, routes to OpenAI provider
 //! - `GET /v1/models` - List available models
 //!
 //! ### Provider-Specific Endpoints
 //! - `POST /openai/v1/chat/completions` - OpenAI API
+//! - `POST /openai/v1/responses` - OpenAI Responses API
 //! - `POST /anthropic/v1/messages` - Anthropic Messages API
 //! - `POST /gemini/v1beta/*` - Gemini API
 //!
@@ -36,6 +38,7 @@ pub mod client;
 pub mod context;
 pub mod error;
 pub mod handlers;
+pub mod limits;
 pub mod middleware;
 pub mod routing;
 
@@ -78,18 +81,57 @@ pub async fn unified_chat_completions(
         Err(e) => return e.into_response(),
     };
 
+    let guard = match limits::check_and_acquire(middleware::extract_session_id(&headers)).await {
+        Ok(guard) => guard,
+        Err(e) => return e.into_response(),
+    };
+
     // Get the appropriate handler based on provider
     let handler = handlers::get_handler(plan.primary.model.provider);
 
     // Handle streaming vs non-streaming
-    if plan.primary.is_streaming {
+    let response = if plan.primary.is_streaming {
         match handler.handle_stream(plan.primary, payload).await {
             Ok(response) => response,
             Err(e) => e.into_response(),
         }
     } else {
         handle_request_with_fallback(handler, plan, payload).await
-    }
+    };
+
+    limits::attach_guard(response, guard)
+}
+
+/// Unified responses endpoint (OpenAI Responses API)
+///
+/// Route: POST /v1/responses
+///
+/// Supports:
+/// - Streaming (stream: true)
+/// - OpenAI Responses payload format
+pub async fn unified_responses(headers: HeaderMap, Json(payload): Json<Value>) -> impl IntoResponse {
+    let plan = match middleware::build_forward_plan(&headers, &payload, Some(Provider::OpenAI)) {
+        Ok(plan) => plan,
+        Err(e) => return e.into_response(),
+    };
+
+    let guard = match limits::check_and_acquire(middleware::extract_session_id(&headers)).await {
+        Ok(guard) => guard,
+        Err(e) => return e.into_response(),
+    };
+
+    let handler = handlers::openai::OpenAIHandler;
+
+    let response = if plan.primary.is_streaming {
+        match handler.handle_responses_stream(plan.primary, payload).await {
+            Ok(response) => response,
+            Err(e) => e.into_response(),
+        }
+    } else {
+        handle_responses_with_fallback(plan, payload).await
+    };
+
+    limits::attach_guard(response, guard)
 }
 
 /// List available models (OpenAI-compatible)
@@ -168,18 +210,32 @@ pub async fn openai_chat(headers: HeaderMap, Json(payload): Json<Value>) -> impl
         Err(e) => return e.into_response(),
     };
 
+    let guard = match limits::check_and_acquire(middleware::extract_session_id(&headers)).await {
+        Ok(guard) => guard,
+        Err(e) => return e.into_response(),
+    };
+
     // Use the handler matching the selected provider.
     let handler = handlers::get_handler(plan.primary.model.provider);
 
     // Handle streaming vs non-streaming
-    if plan.primary.is_streaming {
+    let response = if plan.primary.is_streaming {
         match handler.handle_stream(plan.primary, payload).await {
             Ok(response) => response,
             Err(e) => e.into_response(),
         }
     } else {
         handle_request_with_fallback(handler, plan, payload).await
-    }
+    };
+
+    limits::attach_guard(response, guard)
+}
+
+/// OpenAI Responses endpoint
+///
+/// Route: POST /openai/v1/responses
+pub async fn openai_responses(headers: HeaderMap, Json(payload): Json<Value>) -> impl IntoResponse {
+    unified_responses(headers, Json(payload)).await
 }
 
 /// Anthropic messages endpoint
@@ -195,18 +251,25 @@ pub async fn anthropic_messages(
         Err(e) => return e.into_response(),
     };
 
+    let guard = match limits::check_and_acquire(middleware::extract_session_id(&headers)).await {
+        Ok(guard) => guard,
+        Err(e) => return e.into_response(),
+    };
+
     // Get the appropriate handler
     let handler = handlers::get_handler(plan.primary.model.provider);
 
     // Handle streaming vs non-streaming
-    if plan.primary.is_streaming {
+    let response = if plan.primary.is_streaming {
         match handler.handle_stream(plan.primary, payload).await {
             Ok(response) => response,
             Err(e) => e.into_response(),
         }
     } else {
         handle_request_with_fallback(handler, plan, payload).await
-    }
+    };
+
+    limits::attach_guard(response, guard)
 }
 
 /// Gemini generate endpoint
@@ -243,18 +306,25 @@ async fn gemini_generate_with_version(
         Err(e) => return e.into_response(),
     };
 
+    let guard = match limits::check_and_acquire(middleware::extract_session_id(&headers)).await {
+        Ok(guard) => guard,
+        Err(e) => return e.into_response(),
+    };
+
     // Get the appropriate handler
     let handler = handlers::get_handler(plan.primary.model.provider);
 
     // Handle streaming vs non-streaming
-    if plan.primary.is_streaming {
+    let response = if plan.primary.is_streaming {
         match handler.handle_stream(plan.primary, payload).await {
             Ok(response) => response,
             Err(e) => e.into_response(),
         }
     } else {
         handle_request_with_fallback(handler, plan, payload).await
-    }
+    };
+
+    limits::attach_guard(response, guard)
 }
 
 // ============================================================================
@@ -263,7 +333,7 @@ async fn gemini_generate_with_version(
 
 /// List supported API styles/providers
 pub fn api_styles() -> Vec<&'static str> {
-    vec!["openai", "anthropic", "gemini"]
+    vec!["openai", "OpenAI-Responses", "anthropic", "gemini"]
 }
 
 /// List API styles endpoint
@@ -391,6 +461,42 @@ async fn handle_request_with_fallback(
     ForwardError::RequestFailed("No upstreams available".to_string()).into_response()
 }
 
+async fn handle_responses_with_fallback(plan: ForwardPlan, payload: Value) -> Response {
+    let retry_config = RetryConfig::from_config();
+    let mut contexts = Vec::new();
+    contexts.push(plan.primary);
+    contexts.extend(plan.fallbacks);
+
+    if contexts.is_empty() {
+        return ForwardError::ModelNotFound("No routes configured".to_string()).into_response();
+    }
+
+    let max_attempts = retry_config.max_attempts as usize;
+    if contexts.len() > max_attempts {
+        contexts.truncate(max_attempts);
+    }
+
+    let total_attempts = contexts.len();
+    let handler = handlers::openai::OpenAIHandler;
+
+    for (attempt_idx, ctx) in contexts.into_iter().enumerate() {
+        match handler.handle_responses_request(ctx, payload.clone()).await {
+            Ok(response) => return Json(response.body).into_response(),
+            Err(err) => {
+                let should_retry = should_retry_error(&err);
+                let is_last = attempt_idx + 1 >= total_attempts;
+                if !should_retry || is_last {
+                    return err.into_response();
+                }
+                let delay = client::calculate_retry_delay((attempt_idx + 1) as u32, &retry_config);
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    ForwardError::RequestFailed("No upstreams available".to_string()).into_response()
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -403,6 +509,7 @@ mod tests {
     fn test_api_styles() {
         let styles = api_styles();
         assert!(styles.contains(&"openai"));
+        assert!(styles.contains(&"OpenAI-Responses"));
         assert!(styles.contains(&"anthropic"));
         assert!(styles.contains(&"gemini"));
     }

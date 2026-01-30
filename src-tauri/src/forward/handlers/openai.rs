@@ -11,6 +11,7 @@ use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use crate::forward::client::{self, drain_sse_lines, is_sse_done, parse_sse_data};
@@ -82,8 +83,7 @@ impl ProviderHandlerImpl for OpenAIHandler {
 
     fn transform_request(&self, ctx: &ForwardContext, payload: &Value) -> Value {
         // Determine allowed fields based on upstream capabilities
-        let allowed_fields = get_allowed_fields_for_upstream(&ctx.upstream.id);
-        let mut filtered = filter_payload(payload, allowed_fields);
+        let mut filtered = sanitize_openai_payload_for_upstream(payload, &ctx.upstream.id);
 
         // Replace model with upstream model name
         if let Some(obj) = filtered.as_object_mut() {
@@ -91,11 +91,6 @@ impl ProviderHandlerImpl for OpenAIHandler {
                 "model".to_string(),
                 Value::String(ctx.model.upstream_model().to_string()),
             );
-        }
-
-        // Transform messages for GLM compatibility (convert multimodal content array to string)
-        if is_glm_upstream(&ctx.upstream.id) {
-            transform_messages_for_glm(&mut filtered);
         }
 
         // Log the transformed request
@@ -426,7 +421,6 @@ impl ProviderHandlerImpl for OpenAIHandler {
         let ctx_for_log = ctx_clone;
         let usage_for_log = Arc::clone(&usage_tracker);
         let model_id = ctx.model.id.clone();
-
         let logged_stream = stream
             .chain(futures_util::stream::once(async move {
                 // Log final usage when stream completes
@@ -477,6 +471,266 @@ impl ProviderHandlerImpl for OpenAIHandler {
                 );
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }))
+    }
+}
+
+impl OpenAIHandler {
+    pub async fn handle_responses_request(
+        &self,
+        ctx: ForwardContext,
+        payload: Value,
+    ) -> ForwardResult<UpstreamResponse> {
+        ensure_responses_supported(&ctx)?;
+
+        let start = Instant::now();
+
+        logger::info(
+            "openai",
+            &format!(
+                "Responses request started: model={}, upstream={}, streaming=false",
+                ctx.model.id,
+                ctx.upstream.id
+            ),
+        );
+
+        let headers = self.build_headers(&ctx);
+        let mut body = transform_responses_request(&ctx, &payload);
+        client::normalize_stream_flag(&mut body);
+
+        let config = ctx.retry_config();
+        let client = client::default_client()?;
+
+        let endpoint = ctx.primary_endpoint().unwrap_or("unknown");
+        let full_url = format!("{}{}", endpoint.trim_end_matches('/'), "/responses");
+        logger::debug("openai", &format!("Responses request URL: {}", full_url));
+
+        let result = client::send_with_retry(
+            &client,
+            ctx.all_endpoints(),
+            "/responses",
+            headers,
+            &body,
+            &config,
+        )
+        .await?;
+
+        let status = result.response.status();
+        let status_code = status.as_u16();
+        let response_text = result.response.text().await.map_err(|e| {
+            logger::error("openai", &format!("Failed to read response body: {}", e));
+            ForwardError::RequestFailed(format!("Failed to read response: {}", e))
+        })?;
+
+        if response_text.is_empty() {
+            logger::warn("openai", "Received empty response body from upstream (responses)");
+        }
+
+        let response_body: Value = client::parse_json_response(&response_text).map_err(|e| {
+            logger::error(
+                "openai",
+                &format!(
+                    "Failed to parse response JSON: {}, body: {}",
+                    e,
+                    &response_text[..response_text.len().min(500)]
+                ),
+            );
+            ForwardError::RequestFailed(format!("Failed to parse response: {}", e))
+        })?;
+
+        if !status.is_success() {
+            logger::warn(
+                "openai",
+                &format!(
+                    "Responses request failed: status={}, response={}",
+                    status_code, response_body
+                ),
+            );
+            return Err(ForwardError::RequestFailed(format!(
+                "Upstream returned {}: {}",
+                status_code,
+                response_body.to_string()
+            )));
+        }
+
+        let mut usage = extract_responses_usage(&response_body);
+        if usage.prompt_tokens == 0 {
+            usage.prompt_tokens = estimate_responses_prompt_tokens(&payload);
+        }
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        logger::info(
+            "openai",
+            &format!(
+                "Responses request completed: model={}, latency={}ms, tokens={}/{}",
+                ctx.model.id,
+                latency_ms,
+                usage.prompt_tokens,
+                usage.completion_tokens
+            ),
+        );
+
+        ctx.log_usage(&usage);
+
+        Ok(UpstreamResponse {
+            body: response_body,
+            latency_ms,
+            status: status_code,
+            usage,
+        })
+    }
+
+    pub async fn handle_responses_stream(
+        &self,
+        ctx: ForwardContext,
+        payload: Value,
+    ) -> ForwardResult<Response> {
+        ensure_responses_supported(&ctx)?;
+
+        let headers = self.build_headers(&ctx);
+        let mut body = transform_responses_request(&ctx, &payload);
+
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("stream".to_string(), Value::Bool(true));
+        }
+
+        let client = client::streaming_client()?;
+        let endpoint = ctx
+            .primary_endpoint()
+            .ok_or_else(|| ForwardError::UpstreamNotFound("No endpoints configured".to_string()))?;
+        let url = format!("{}/responses", endpoint.trim_end_matches('/'));
+
+        logger::info(
+            "openai",
+            &format!(
+                "Starting responses stream: model={}, upstream={}, url={}",
+                ctx.model.id, ctx.upstream.id, url
+            ),
+        );
+
+        let response = client
+            .post(&url)
+            .headers(headers.clone())
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| {
+                logger::error(
+                    "openai",
+                    &format!("Responses stream request failed: url={}, error={}", url, e),
+                );
+                ForwardError::RequestFailed(e.to_string())
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            logger::error(
+                "openai",
+                &format!(
+                    "Responses stream error: status={}, body={}",
+                    status,
+                    &text[..text.len().min(500)]
+                ),
+            );
+            return Err(ForwardError::RequestFailed(format!("{}: {}", status, text)));
+        }
+
+        logger::debug(
+            "openai",
+            &format!("Responses stream status: {}", status),
+        );
+
+        let ctx_clone = ctx.clone();
+        let estimated_prompt_tokens = estimate_responses_prompt_tokens(&payload);
+
+        let usage_tracker = Arc::new(Mutex::new(TokenUsage::new(estimated_prompt_tokens, 0)));
+        let usage_tracker_clone = Arc::clone(&usage_tracker);
+        let line_buffer = Arc::new(Mutex::new(Vec::new()));
+        let line_buffer_clone = Arc::clone(&line_buffer);
+
+        let stream = response.bytes_stream().map(move |result| match result {
+            Ok(bytes) => {
+                let lines = {
+                    let mut buffer = line_buffer_clone.lock().unwrap();
+                    drain_sse_lines(&mut buffer, bytes.as_ref())
+                };
+
+                for line in lines {
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Some(data) = parse_sse_data(&line) {
+                        if !is_sse_done(data) {
+                            match serde_json::from_str::<Value>(data) {
+                                Ok(json) => {
+                                    if let Ok(mut tracker) = usage_tracker_clone.lock() {
+                                        apply_responses_stream_usage(&json, &mut tracker);
+                                    }
+                                }
+                                Err(e) => {
+                                    logger::error(
+                                        "openai",
+                                        &format!(
+                                            "Failed to parse responses SSE JSON: {}, data={}",
+                                            e,
+                                            &data[..data.len().min(200)]
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Ok(bytes)
+            }
+            Err(e) => {
+                logger::error("openai", &format!("Responses stream bytes error: {}", e));
+                Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            }
+        });
+
+        let finalizer = StreamUsageFinalizer::new(
+            ctx_clone,
+            Arc::clone(&usage_tracker),
+            ctx.model.id.clone(),
+            "responses",
+        );
+        let finalizer_for_log = finalizer.clone();
+
+        let logged_stream = stream
+            .chain(futures_util::stream::once(async move {
+                finalizer_for_log.log_once();
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "stream_end"))
+            }))
+            .filter_map(|result| async move {
+                match result {
+                    Ok(bytes) => Some(Ok::<Bytes, std::io::Error>(bytes)),
+                    Err(e) if e.to_string() == "stream_end" => None,
+                    Err(e) => {
+                        logger::error("openai", &format!("Responses stream filter error: {}", e));
+                        Some(Err(e))
+                    }
+                }
+            });
+
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .header("cache-control", "no-cache")
+            .header("connection", "keep-alive")
+            .body(Body::from_stream(logged_stream))
+            .unwrap_or_else(|e| {
+                logger::error(
+                    "openai",
+                    &format!("Failed to build responses stream response: {}", e),
+                );
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            });
+
+        response.extensions_mut().insert(finalizer);
+        Ok(response)
     }
 }
 
@@ -545,6 +799,21 @@ fn get_allowed_fields_for_upstream(upstream_id: &str) -> &'static [&'static str]
     }
 }
 
+pub(crate) fn sanitize_openai_payload_for_upstream(
+    payload: &Value,
+    upstream_id: &str,
+) -> Value {
+    let allowed_fields = get_allowed_fields_for_upstream(upstream_id);
+    let mut filtered = filter_payload(payload, allowed_fields);
+
+    // Transform messages for GLM compatibility (convert multimodal content array to string)
+    if is_glm_upstream(upstream_id) {
+        transform_messages_for_glm(&mut filtered);
+    }
+
+    filtered
+}
+
 /// Check if upstream is GLM/Z.ai
 fn is_glm_upstream(upstream_id: &str) -> bool {
     upstream_id.eq_ignore_ascii_case("zai") || upstream_id.eq_ignore_ascii_case("Z.ai")
@@ -597,6 +866,157 @@ fn estimate_openai_prompt_tokens(payload: &Value) -> i64 {
         .map(|m| m.to_string())
         .unwrap_or_default();
     estimate_tokens(&messages)
+}
+
+fn ensure_responses_supported(ctx: &ForwardContext) -> ForwardResult<()> {
+    if let Some(style) = ctx.upstream.api_style.as_deref() {
+        if style.eq_ignore_ascii_case("anthropic") || style.eq_ignore_ascii_case("gemini") {
+            return Err(ForwardError::InvalidRequest(format!(
+                "Responses API requires an OpenAI-style upstream. Upstream '{}' has api_style '{}'",
+                ctx.upstream.id, style
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn transform_responses_request(ctx: &ForwardContext, payload: &Value) -> Value {
+    let mut cloned = payload.clone();
+    if let Some(obj) = cloned.as_object_mut() {
+        obj.insert(
+            "model".to_string(),
+            Value::String(ctx.model.upstream_model().to_string()),
+        );
+    }
+    cloned
+}
+
+fn estimate_responses_prompt_tokens(payload: &Value) -> i64 {
+    if let Some(input) = payload.get("input") {
+        if let Some(text) = input.as_str() {
+            return estimate_tokens(text);
+        }
+        return estimate_tokens(&input.to_string());
+    }
+
+    let fallback = payload
+        .get("messages")
+        .map(|m| m.to_string())
+        .unwrap_or_default();
+    estimate_tokens(&fallback)
+}
+
+fn parse_responses_usage(usage: &Value) -> TokenUsage {
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("input_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("output_tokens"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    TokenUsage::new(prompt_tokens, completion_tokens)
+}
+
+fn extract_responses_usage_from_value(value: &Value) -> Option<TokenUsage> {
+    if let Some(usage) = value.get("usage") {
+        return Some(parse_responses_usage(usage));
+    }
+    if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
+        return Some(parse_responses_usage(usage));
+    }
+    None
+}
+
+fn extract_responses_usage(response: &Value) -> TokenUsage {
+    extract_responses_usage_from_value(response).unwrap_or_default()
+}
+
+fn apply_responses_stream_usage(event: &Value, usage: &mut TokenUsage) {
+    if let Some(new_usage) = extract_responses_usage_from_value(event) {
+        *usage = new_usage;
+        return;
+    }
+
+    if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+        usage.completion_tokens += estimate_tokens(delta);
+        return;
+    }
+
+    if let Some(content) = event.get("content").and_then(|v| v.as_str()) {
+        usage.completion_tokens += estimate_tokens(content);
+        return;
+    }
+
+    if let Some(output) = event.get("output_text").and_then(|v| v.as_str()) {
+        usage.completion_tokens += estimate_tokens(output);
+        return;
+    }
+
+    if let Some(text) = event.get("text").and_then(|v| v.as_str()) {
+        usage.completion_tokens += estimate_tokens(text);
+    }
+}
+
+#[derive(Clone)]
+struct StreamUsageFinalizer {
+    ctx: ForwardContext,
+    usage: Arc<Mutex<TokenUsage>>,
+    model_id: String,
+    label: &'static str,
+    logged: Arc<AtomicBool>,
+}
+
+impl StreamUsageFinalizer {
+    fn new(
+        ctx: ForwardContext,
+        usage: Arc<Mutex<TokenUsage>>,
+        model_id: String,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            ctx,
+            usage,
+            model_id,
+            label,
+            logged: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn log_once(&self) {
+        if self.logged.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        if let Ok(usage) = self.usage.lock() {
+            logger::info(
+                "openai",
+                &format!(
+                    "{} stream completed: model={}, tokens={}/{}",
+                    self.label,
+                    self.model_id,
+                    usage.prompt_tokens,
+                    usage.completion_tokens
+                ),
+            );
+            self.ctx.log_usage(&usage);
+        } else {
+            logger::error(
+                "openai",
+                &format!(
+                    "Failed to acquire usage tracker lock for model={} ({})",
+                    self.model_id, self.label
+                ),
+            );
+        }
+    }
+}
+
+impl Drop for StreamUsageFinalizer {
+    fn drop(&mut self) {
+        self.log_once();
+    }
 }
 
 async fn handle_openai_to_anthropic_request(
@@ -1123,5 +1543,36 @@ mod tests {
             image_url.get("url").unwrap(),
             "https://example.com/image.jpg"
         );
+    }
+
+    #[test]
+    fn test_extract_responses_usage_input_output() {
+        let response = serde_json::json!({
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 5
+            }
+        });
+
+        let usage = extract_responses_usage(&response);
+        assert_eq!(usage.prompt_tokens, 12);
+        assert_eq!(usage.completion_tokens, 5);
+    }
+
+    #[test]
+    fn test_extract_responses_usage_nested_response() {
+        let response = serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "prompt_tokens": 7,
+                    "completion_tokens": 3
+                }
+            }
+        });
+
+        let usage = extract_responses_usage(&response);
+        assert_eq!(usage.prompt_tokens, 7);
+        assert_eq!(usage.completion_tokens, 3);
     }
 }

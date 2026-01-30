@@ -270,6 +270,45 @@ async fn export_backup() -> Json<Value> {
     }))
 }
 
+#[derive(Deserialize)]
+struct ExportRestorePayload {
+    settings: Option<config::Settings>,
+    projects: Option<Vec<projects::Project>>,
+}
+
+async fn restore_backup(Json(payload): Json<ExportRestorePayload>) -> impl IntoResponse {
+    let settings = match payload.settings {
+        Some(settings) => settings,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "Missing settings in backup payload"})),
+            )
+                .into_response()
+        }
+    };
+
+    if let Err(err) = config::save(&settings) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": err})),
+        )
+            .into_response();
+    }
+
+    if let Some(projects) = payload.projects {
+        if let Err(err) = projects::replace_all(&projects) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": err})),
+            )
+                .into_response();
+        }
+    }
+
+    StatusCode::NO_CONTENT.into_response()
+}
+
 async fn clear_all_data() -> impl IntoResponse {
     match clear_all_data_inner() {
         Ok(payload) => Json(payload).into_response(),
@@ -450,6 +489,8 @@ pub fn app() -> Router {
             "/v1/chat/completions",
             post(forward::unified_chat_completions),
         )
+        // OpenAI Responses endpoint (auto-routes to OpenAI provider)
+        .route("/v1/responses", post(forward::unified_responses))
         // Model listing (OpenAI-compatible)
         .route("/v1/models", get(forward::list_models))
         .route("/v1/models/:model_id", get(forward::get_model))
@@ -460,6 +501,7 @@ pub fn app() -> Router {
         // ============================================
         // OpenAI-style
         .route("/openai/v1/chat/completions", post(forward::openai_chat))
+        .route("/openai/v1/responses", post(forward::openai_responses))
         .route("/openai/v1/models", get(forward::list_models))
         // Anthropic-style
         .route("/anthropic/v1/messages", post(forward::anthropic_messages))
@@ -511,6 +553,7 @@ pub fn app() -> Router {
             get(get_forward_token).post(refresh_forward_token),
         )
         .route("/api/export/backup", get(export_backup))
+        .route("/api/export/restore", post(restore_backup))
         .route("/api/data/clear", post(clear_all_data))
         // ============================================
         // Auto Config & Backup API

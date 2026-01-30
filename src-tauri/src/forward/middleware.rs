@@ -115,6 +115,16 @@ pub fn extract_request_meta(headers: &HeaderMap) -> RequestMeta {
     }
 }
 
+/// Extract session identifier from request headers
+///
+/// Priority order:
+/// 1. x-ccr-session-id
+/// 2. x-ccr-session
+pub fn extract_session_id(headers: &HeaderMap) -> Option<String> {
+    extract_header_value(headers, "x-ccr-session-id")
+        .or_else(|| extract_header_value(headers, "x-ccr-session"))
+}
+
 /// Check if request is streaming
 pub fn is_streaming_request(payload: &Value) -> bool {
     match payload.get("stream") {

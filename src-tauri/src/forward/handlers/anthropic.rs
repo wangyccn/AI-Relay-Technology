@@ -19,7 +19,7 @@ use crate::forward::context::{estimate_tokens, ForwardContext, Provider, TokenUs
 use crate::forward::error::{ForwardError, ForwardResult};
 use crate::logger;
 
-use super::{gemini, ProviderHandlerImpl};
+use super::{gemini, openai, ProviderHandlerImpl};
 
 /// Allowed fields for Anthropic Messages API
 const ALLOWED_FIELDS: &[&str] = &[
@@ -174,9 +174,11 @@ impl ProviderHandlerImpl for AnthropicHandler {
                     ctx.upstream.id
                 ),
             );
-            let mut converted = convert_anthropic_to_openai(payload, &ctx.model.upstream_model());
-            client::normalize_stream_flag(&mut converted);
-            converted
+            let converted = convert_anthropic_to_openai(payload, &ctx.model.upstream_model());
+            let mut sanitized =
+                openai::sanitize_openai_payload_for_upstream(&converted, &ctx.upstream.id);
+            client::normalize_stream_flag(&mut sanitized);
+            sanitized
         } else {
             // Native Anthropic format
             let mut filtered = filter_payload(payload, ALLOWED_FIELDS);

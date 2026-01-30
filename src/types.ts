@@ -80,6 +80,15 @@ export interface ThemeConfig {
   dark_custom?: string; // Theme JSON
 }
 
+export interface RateLimitConfig {
+  rpm?: number;
+  max_concurrent?: number;
+  max_concurrent_per_session?: number;
+  budget_daily_usd?: number;
+  budget_weekly_usd?: number;
+  budget_monthly_usd?: number;
+}
+
 // AI 工具配置文件路径
 export interface ToolConfigPath {
   tool: 'claude' | 'codex' | 'gemini'; // 工具名称
@@ -107,6 +116,7 @@ export interface Settings {
   proxy?: ProxyConfig;
   enable_retry_fallback?: boolean;
   enable_dynamic_model?: boolean;
+  limits?: RateLimitConfig;
   theme?: ThemeConfig;
   backup?: BackupConfig;
 }

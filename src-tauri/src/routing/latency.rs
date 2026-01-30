@@ -3,6 +3,12 @@ use serde::Serialize;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 #[derive(Debug, Serialize, Clone)]
 pub struct LatencyStat {
     pub endpoint: String,
@@ -21,7 +27,13 @@ fn curl_sink() -> &'static str {
 fn measure_with_curl(url: &str) -> Option<LatencyStat> {
     // Use curl to measure total time; fallback handled by caller.
     let sink = curl_sink();
-    let output = Command::new("curl")
+    let mut cmd = Command::new("curl");
+    #[cfg(target_os = "windows")]
+    {
+        // Avoid popping console windows on Windows GUI apps.
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd
         .args([
             "-o",
             sink,
